@@ -22,6 +22,13 @@ CREATE TABLE IF NOT EXISTS index_values (
  collection TEXT NOT NULL, name TEXT NOT NULL, token TEXT NOT NULL, key TEXT NOT NULL,
  PRIMARY KEY(collection,name,token,key), FOREIGN KEY(collection,name) REFERENCES index_defs(collection,name) ON DELETE CASCADE);
 CREATE INDEX IF NOT EXISTS index_document ON index_values(collection,key);
+CREATE TABLE IF NOT EXISTS text_defs (
+ collection TEXT NOT NULL, name TEXT NOT NULL, field TEXT NOT NULL,
+ PRIMARY KEY(collection,name), FOREIGN KEY(collection) REFERENCES collections(name));
+CREATE TABLE IF NOT EXISTS text_postings (
+ collection TEXT NOT NULL, name TEXT NOT NULL, token TEXT NOT NULL, key TEXT NOT NULL, freq INTEGER NOT NULL,
+ PRIMARY KEY(collection,name,token,key), FOREIGN KEY(collection,name) REFERENCES text_defs(collection,name) ON DELETE CASCADE);
+CREATE INDEX IF NOT EXISTS text_document ON text_postings(collection,key);
 CREATE TABLE IF NOT EXISTS pins (name TEXT PRIMARY KEY, rev INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS consumers (name TEXT PRIMARY KEY, ack INTEGER NOT NULL);
 """

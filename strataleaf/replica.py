@@ -19,6 +19,7 @@ class Replication:
                 "catalog_epoch": int(self.store.get("catalog_epoch")), "head": int(self.store.get("head")), "floor": int(self.store.get("floor")),
                 "collections": [dict(row) for row in connection.execute("SELECT * FROM collections ORDER BY name")],
                 "indexes": [dict(row) for row in connection.execute("SELECT * FROM index_defs ORDER BY collection,name")],
+                "text_indexes": [dict(row) for row in connection.execute("SELECT * FROM text_defs ORDER BY collection,name")],
                 "commits": commits}
             return {"body": body, "sha256": digest(body)}
 
@@ -46,6 +47,10 @@ class Replication:
                 connection.execute("DELETE FROM index_defs")
                 for definition in body["indexes"] if body["through"] == body["head"] else []:
                     connection.execute("INSERT INTO index_defs VALUES (?,?,?,?)", (definition["collection"], definition["name"], definition["field"], definition["unique_flag"]))
+                connection.execute("DELETE FROM text_postings")
+                connection.execute("DELETE FROM text_defs")
+                for definition in body.get("text_indexes", []) if body["through"] == body["head"] else []:
+                    connection.execute("INSERT INTO text_defs VALUES (?,?,?)", (definition["collection"], definition["name"], definition["field"]))
                 applied = 0
                 for commit in commits:
                     revision = commit["revision"]

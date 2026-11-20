@@ -1,5 +1,6 @@
 from .codec import digest, field, loads, scalar_token
 from .mvcc import visible_rows
+from .text import term_frequencies
 
 
 class Diagnostics:
@@ -12,7 +13,8 @@ class Diagnostics:
             integrity = [row[0] for row in connection.execute("PRAGMA integrity_check" if deep else "PRAGMA quick_check")]
             references = [tuple(row) for row in connection.execute("PRAGMA foreign_key_check")]
             counts = {table: connection.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
-                      for table in ("collections", "versions", "commits", "index_defs", "index_values", "pins", "consumers")}
+                      for table in ("collections", "versions", "commits", "index_defs", "index_values",
+                                    "text_defs", "text_postings", "pins", "consumers")}
             revisions = [row[0] for row in connection.execute("SELECT rev FROM commits WHERE rev>? ORDER BY rev", (floor,))]
             issues = []
             if revisions != list(range(floor + 1, head + 1)):
@@ -41,6 +43,17 @@ class Diagnostics:
                 actual = {tuple(row) for row in connection.execute("SELECT collection,name,token,key FROM index_values")}
                 if expected != actual:
                     issues.append("index entries differ from current visible documents")
+                expected_text = set()
+                for definition in connection.execute("SELECT * FROM text_defs"):
+                    for row in visible_rows(connection, definition["collection"], head):
+                        value = field(loads(row["body"]), definition["field"])
+                        if not isinstance(value, str):
+                            continue
+                        for token, frequency in term_frequencies(value).items():
+                            expected_text.add((definition["collection"], definition["name"], token, row["key"], frequency))
+                actual_text = {tuple(row) for row in connection.execute("SELECT collection,name,token,key,freq FROM text_postings")}
+                if expected_text != actual_text:
+                    issues.append("text index entries differ from current visible documents")
             return {"ok": not issues, "issues": issues, "head": head, "floor": floor,
                     "database_id": self.store.get("database_id"), "mode": self.store.get("mode"),
                     "counts": counts, "sqlite": integrity, "foreign_keys": references}

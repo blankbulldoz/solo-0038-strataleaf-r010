@@ -1,7 +1,8 @@
 from .codec import MISSING, dumps, field
 from .errors import InvalidDocument
+from .text import query_tokens, text_match
 
-OPS = {"eq", "ne", "lt", "le", "gt", "ge", "in", "exists", "contains"}
+OPS = {"eq", "ne", "lt", "le", "gt", "ge", "in", "exists", "contains", "text"}
 
 
 def validate_predicate(expression, depth=0):
@@ -27,6 +28,8 @@ def validate_predicate(expression, depth=0):
         raise InvalidDocument("in requires an array")
     if expression["op"] == "exists" and not isinstance(expression["value"], bool):
         raise InvalidDocument("exists requires a boolean")
+    if expression["op"] == "text":
+        query_tokens(expression["value"])
 
 
 def equal(left, right):
@@ -66,6 +69,8 @@ def matches(document, expression):
         if isinstance(value, list):
             return any(equal(item, other) for item in value)
         return isinstance(value, str) and isinstance(other, str) and other in value
+    if op == "text":
+        return text_match(value, query_tokens(other))
     if isinstance(value, bool) or isinstance(other, bool):
         return False
     numeric = isinstance(value, (int, float)) and isinstance(other, (int, float))
@@ -81,5 +86,31 @@ def equality_terms(expression):
     if "and" in expression:
         return [term for child in expression["and"] for term in equality_terms(child)]
     if expression.get("op") == "eq":
+        return [(expression["field"], expression["value"])]
+    return []
+
+
+def text_terms(expression):
+    """Conjunctive text terms usable for postings candidate intersection."""
+    if expression is None:
+        return []
+    if "and" in expression:
+        return [term for child in expression["and"] for term in text_terms(child)]
+    if expression.get("op") == "text":
+        return [(expression["field"], expression["value"])]
+    return []
+
+
+def positive_text_terms(expression, negated=False):
+    """Text terms that contribute positively to a match, for explanations."""
+    if expression is None:
+        return []
+    if "and" in expression:
+        return [term for child in expression["and"] for term in positive_text_terms(child, negated)]
+    if "or" in expression:
+        return [term for child in expression["or"] for term in positive_text_terms(child, negated)]
+    if "not" in expression:
+        return positive_text_terms(expression["not"], not negated)
+    if not negated and expression.get("op") == "text":
         return [(expression["field"], expression["value"])]
     return []

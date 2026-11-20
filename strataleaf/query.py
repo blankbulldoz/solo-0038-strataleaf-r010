@@ -1,10 +1,11 @@
 from dataclasses import dataclass
-from .codec import digest
+from .codec import digest, field
 from .cursors import decode_cursor, encode_cursor
 from .errors import InvalidCursor, InvalidDocument, NotFound
 from .indexes import equality_candidates
 from .mvcc import checked_revision, record, visible_rows, latest_row
-from .predicates import equality_terms, matches, validate_predicate
+from .predicates import equality_terms, matches, positive_text_terms, text_terms, validate_predicate
+from .text import query_tokens, term_frequencies, text_candidates
 
 
 @dataclass(frozen=True)
@@ -13,6 +14,7 @@ class Page:
     revision: int
     cursor: str | None
     plan: dict
+    explain: dict | None = None
 
 
 class QueryEngine:
@@ -45,6 +47,13 @@ class QueryEngine:
                         index_name, candidates = indexed
                         plan = {"access": "equality_index", "index": index_name}
                         break
+                if candidates is None:
+                    for path, query in text_terms(predicate):
+                        indexed = text_candidates(connection, collection, path, query)
+                        if indexed is not None:
+                            index_name, candidates = indexed
+                            plan = {"access": "text_index", "index": index_name}
+                            break
             if candidates is None:
                 rows = visible_rows(connection, collection, revision)
             else:
@@ -65,4 +74,26 @@ class QueryEngine:
                 output = output[:limit]
                 continuation = encode_cursor(self.store, {"database": self.store.get("database_id"),
                     "query": fingerprint, "revision": revision, "after": output[-1].key})
-            return Page(output, revision, continuation, {**plan, "examined": examined})
+            return Page(output, revision, continuation, {**plan, "examined": examined},
+                        explain_matches(output, predicate))
+
+
+def explain_matches(records, predicate):
+    terms = positive_text_terms(predicate)
+    if not terms:
+        return None
+    explain = {}
+    for item in records:
+        entries = []
+        for path, query in terms:
+            value = field(item.document, path)
+            if not isinstance(value, str):
+                continue
+            frequencies = term_frequencies(value)
+            tokens = query_tokens(query)
+            if all(token in frequencies for token in tokens):
+                entries.append({"field": path, "query": query, "tokens": tokens,
+                                "matched": {token: frequencies[token] for token in tokens}})
+        if entries:
+            explain[item.key] = entries
+    return explain

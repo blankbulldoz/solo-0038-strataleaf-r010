@@ -128,6 +128,56 @@ def run(flow):
                 if sum(item["count"] for item in output["groups"]) != 6:
                     raise RuntimeError("aggregation lost visible documents")
                 output["invalid"] = rejected(lambda: db.aggregates.group("unknown", "region"), Exception)
+            elif flow == "search":
+                db.catalog.create("notes", {"fields": {"title": "string", "body": "string", "lang": "string"}, "required": ["title"]})
+                db.batch("seed_notes").put("notes", "n1", {"title": "数据库设计", "body": "数据库 索引 数据库", "lang": "zh"}).put(
+                    "notes", "n2", {"title": "Index design", "body": "SQLite index index", "lang": "en"}).put(
+                    "notes", "n3", {"title": "混合", "body": "全文 Search 搜索", "lang": "mix"}).put(
+                    "notes", "n4", {"title": "无正文", "lang": "zh"}).commit()
+                db.indexes.create_text("notes", "body_text", "body")
+                duplicate = rejected(lambda: db.indexes.create_text("notes", "body_text", "body"), Conflict)
+                chinese = db.query("notes", {"field": "body", "op": "text", "value": "数据库"})
+                if [row.key for row in chinese.records] != ["n1"] or chinese.plan["access"] != "text_index":
+                    raise RuntimeError("text index plan or Chinese match failed")
+                if chinese.explain["n1"][0]["matched"] != {"数": 2, "据": 2, "库": 2}:
+                    raise RuntimeError("repeated term frequencies were not explained")
+                both_chars = db.query("notes", {"field": "body", "op": "text", "value": "搜索"})
+                if [row.key for row in both_chars.records] != ["n3"]:
+                    raise RuntimeError("ideograph conjunction semantics differ")
+                composed = db.query("notes", {"and": [{"field": "body", "op": "text", "value": "数据库"},
+                                                      {"field": "lang", "op": "eq", "value": "en"}]})
+                if composed.records:
+                    raise RuntimeError("text and equality predicates did not compose")
+                scanned = db.query("notes", {"field": "body", "op": "text", "value": "数据库"}, force_scan=True)
+                if scanned.records != chinese.records or scanned.plan["access"] != "version_scan":
+                    raise RuntimeError("text index and scan differ")
+                paging = {"field": "body", "op": "text", "value": "索"}
+                first_page = db.query("notes", paging, limit=1)
+                db.batch().put("notes", "n3", {"title": "混合", "body": "已改写", "lang": "mix"}).commit()
+                db.batch().delete("notes", "n2").commit()
+                keys = [row.key for row in first_page.records]
+                cursor = first_page.cursor
+                while cursor:
+                    page = db.query("notes", paging, limit=1, cursor=cursor)
+                    keys.extend(row.key for row in page.records)
+                    cursor = page.cursor
+                if keys != ["n1", "n3"]:
+                    raise RuntimeError("pagination did not hold its read revision")
+                fresh = db.query("notes", paging)
+                if [row.key for row in fresh.records] != ["n1"]:
+                    raise RuntimeError("replaced content still searchable")
+                if db.query("notes", {"field": "body", "op": "text", "value": "index"}).records:
+                    raise RuntimeError("deleted document still searchable")
+                history = db.query("notes", {"field": "body", "op": "text", "value": "index"}, revision=first_page.revision)
+                if [row.key for row in history.records] != ["n2"] or history.plan["access"] != "version_scan":
+                    raise RuntimeError("historical text read failed")
+                output = {"plan": chinese.plan, "explain": chinese.explain, "paged_keys": keys,
+                          "after_writes": [row.key for row in fresh.records],
+                          "history_keys": [row.key for row in history.records],
+                          "missing_field_matches": [row.key for row in db.query("notes", {"field": "body", "op": "text", "value": "无正文"}).records],
+                          "duplicate_index": duplicate,
+                          "empty_query": rejected(lambda: db.query("notes", {"field": "body", "op": "text", "value": "！！！"}), InvalidDocument),
+                          "indexes": db.indexes.list("notes"), "integrity": db.diagnostics.inspect(True)["ok"]}
             elif flow == "patch":
                 result = db.patch("segments", "seg_00", {"code": None, "detail": {"block": 4}}, expected=first)
                 output = {"patch": result.__dict__, "document": db.get("segments", "seg_00").document,
